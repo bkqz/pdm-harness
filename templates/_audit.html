@@ -1,0 +1,41 @@
+<div class="fixed inset-0 z-50 bg-black/80 p-8 overflow-y-auto"
+     onclick="if(event.target===this)document.getElementById('audit-panel').classList.add('hidden')">
+  <div class="max-w-4xl mx-auto bg-[#161b22] border border-[#21262d] rounded-lg p-6">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-sm font-bold text-[#e6edf3] uppercase tracking-widest">Audit Log</h2>
+      <button onclick="document.getElementById('audit-panel').classList.add('hidden')"
+              class="text-xs text-[#8b949e] hover:text-red-400">✕ close</button>
+    </div>
+    <div class="space-y-px text-[10px] font-mono">
+      {% for rec in records %}
+      {% set ev = rec.get("event","") %}
+      <div class="flex gap-3 py-1 border-b border-[#0d1117]
+                  {% if ev == 'WORK_ORDER_APPROVED' %}text-green-400
+                  {% elif ev in ('ENGINE_ERROR','GUARDRAIL_BLOCK') %}text-red-400
+                  {% elif ev == 'ALARM' %}text-yellow-400
+                  {% elif ev == 'AGENT_DIAGNOSIS' %}text-blue-400
+                  {% elif ev == 'HITL_DECISION' %}text-purple-400
+                  {% else %}text-[#8b949e]{% endif %}">
+        <span class="shrink-0 text-[#30363d]">{{ rec.get("timestamp","")[:19] }}</span>
+        <span class="shrink-0 w-36">{{ ev }}</span>
+        <span class="shrink-0 w-24 text-yellow-300">{{ rec.get("asset_id","") or rec.get("run_id","")[:8] }}</span>
+        <span class="truncate text-[#e6edf3]">
+          {% if ev == "WORK_ORDER_APPROVED" %}${{ "%.2f"|format(rec.get("estimated_cost_usd",0)) }}
+          {% elif ev == "AGENT_DIAGNOSIS" %}{{ rec.get("fault_category","") }} · {{ rec.get("priority","") }} · {{ "%.0f"|format(rec.get("confidence_score",0)*100) }}%
+          {% elif ev == "TOOL_RESULT" %}{{ rec.get("check_name","") }} → {{ "PASS" if rec.get("passed") else "FAIL" }} · {{ rec.get("detail","")[:80] }}
+          {% elif ev == "GUARDRAIL_BLOCK" %}{{ rec.get("rule_name","") }} · {{ rec.get("detail","")[:80] }}
+          {% elif ev == "ALARM" %}{{ rec.get("alarm_type","") }} · {{ rec.get("recommended_action","")[:60] }}
+          {% elif ev == "HITL_DECISION" %}{{ rec.get("decision","") }} · {{ rec.get("operator_notes","")[:60] }}
+          {% elif ev == "PURCHASE_ORDER_RAISED" %}{{ rec.get("po_id","") }} · {{ rec.get("part_number","") }} x{{ rec.get("quantity",1) }} · ${{ "%.2f"|format(rec.get("total_cost_usd",0)) }}
+          {% elif ev == "STATE_TRANSITION" %}phase={{ rec.get("phase","") }} iter={{ rec.get("iteration",0) }}
+          {% else %}{{ rec.get("detail", rec.get("content_preview", ""))[:80] }}
+          {% endif %}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    {% if not records %}
+    <p class="text-xs text-[#30363d] text-center py-8">No audit records yet.</p>
+    {% endif %}
+  </div>
+</div>

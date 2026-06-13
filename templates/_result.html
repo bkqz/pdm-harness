@@ -1,0 +1,303 @@
+{# ── PIPELINE PANEL (main HTMX target) ──────────────────────────────────── #}
+<div id="pipeline-panel" class="p-6">
+
+  <div class="flex items-center justify-between mb-5">
+    <p class="text-[10px] text-[#8b949e] uppercase tracking-widest">Agent Pipeline</p>
+    <span class="text-[10px] text-[#30363d] font-mono">{{ state.run_id[:12] }}</span>
+  </div>
+
+  {# NLP extraction box — only shown when input came from operator report #}
+  {% if nlp_extracted is defined and nlp_extracted %}
+  <div class="mb-4 p-3 bg-[#161b22] border border-purple-900 rounded">
+    <p class="text-[8px] text-purple-400 uppercase tracking-widest mb-2">NLP → SCADA Extraction</p>
+    <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px]">
+      <div><span class="text-[#30363d]">Asset</span>
+           <span class="text-yellow-300 font-bold ml-1">{{ nlp_extracted.get("asset_id","?") }}</span></div>
+      <div><span class="text-[#30363d]">Vibration</span>
+           <span class="text-[#e6edf3] ml-1">{{ nlp_extracted.get("vibration_mm_s","?") }} mm/s</span></div>
+      <div><span class="text-[#30363d]">Temp</span>
+           <span class="text-[#e6edf3] ml-1">{{ nlp_extracted.get("temperature_c","?") }} °C</span></div>
+      <div><span class="text-[#30363d]">Pressure</span>
+           <span class="text-[#e6edf3] ml-1">{{ nlp_extracted.get("pressure_bar","?") }} bar</span></div>
+      {% if nlp_extracted.get("flow_rate_l_min") %}
+      <div><span class="text-[#30363d]">Flow</span>
+           <span class="text-[#e6edf3] ml-1">{{ nlp_extracted.get("flow_rate_l_min") }} L/min</span></div>
+      {% endif %}
+      {% set codes = nlp_extracted.get("fault_codes", []) %}
+      {% if codes %}
+      <div class="col-span-2"><span class="text-[#30363d]">Codes</span>
+           <span class="text-yellow-400 ml-1">{{ codes | join(", ") }}</span></div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="space-y-3">
+  {% for p in phases %}
+    {% set icon = "✓" if p.status in ("pass","approved","hitl_approved") else
+                  "✗" if p.status in ("fail","error","hitl_rejected") else
+                  "⊘" if p.status == "blocked" else "→" %}
+    {% set col  = "text-green-400"  if p.status in ("pass","approved","hitl_approved") else
+                  "text-red-400"    if p.status in ("fail","error") else
+                  "text-yellow-400" if p.status in ("blocked","hitl_rejected") else
+                  "text-blue-400" %}
+    {% set bar  = "border-green-600"  if p.status in ("pass","approved","hitl_approved") else
+                  "border-red-700"    if p.status in ("fail","error","hitl_rejected") else
+                  "border-yellow-600" if p.status == "blocked" else
+                  "border-blue-700" %}
+
+    <div class="phase-step flex items-start gap-3 border-l-2 {{ bar }} pl-3 py-1">
+      <span class="mt-px text-sm {{ col }} shrink-0">{{ icon }}</span>
+      <div class="min-w-0">
+        <span class="text-[10px] text-[#8b949e] uppercase tracking-widest">{{ p.name }}</span>
+        <p class="text-xs text-[#e6edf3] mt-0.5 break-words">{{ p.detail }}</p>
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+
+  {# Cost breakdown #}
+  {% if state.cost_breakdown %}
+  <div class="mt-5 p-3 bg-[#161b22] border border-[#21262d] rounded text-[10px] text-[#8b949e] break-words">
+    <span class="text-[#30363d] uppercase tracking-widest">Cost breakdown</span><br>
+    {{ state.cost_breakdown }}
+  </div>
+  {% endif %}
+
+  {# Token / iteration metrics #}
+  {% if state.iteration > 0 %}
+  <div class="mt-4 grid grid-cols-3 gap-2 text-center">
+    <div class="p-2 bg-[#161b22] rounded border border-[#21262d]">
+      <p class="text-[8px] text-[#30363d] uppercase tracking-widest mb-0.5">Turns</p>
+      <p class="text-sm font-bold text-[#e6edf3]">{{ state.iteration }}</p>
+    </div>
+    <div class="p-2 bg-[#161b22] rounded border border-[#21262d]">
+      <p class="text-[8px] text-[#30363d] uppercase tracking-widest mb-0.5">Prompt tkn</p>
+      <p class="text-sm font-bold text-[#e6edf3]">{{ state.llm_prompt_tokens }}</p>
+    </div>
+    <div class="p-2 bg-[#161b22] rounded border border-[#21262d]">
+      <p class="text-[8px] text-[#30363d] uppercase tracking-widest mb-0.5">Output tkn</p>
+      <p class="text-sm font-bold text-[#e6edf3]">{{ state.llm_completion_tokens }}</p>
+    </div>
+  </div>
+  {% endif %}
+
+</div>
+
+{# ── WORK ORDER PANEL (OOB swap into #workorder-panel) ──────────────────── #}
+<div id="workorder-panel" hx-swap-oob="true" class="p-4 overflow-y-auto">
+
+  <p class="text-[10px] text-[#8b949e] uppercase tracking-widest mb-3">Work Order</p>
+
+  {# ── APPROVED ─────────────────────────────────────────────────────────── #}
+  {% if state.phase in ("APPROVED", "HITL_APPROVED") %}
+  <div class="wo-card">
+    {% if state.phase == "APPROVED" %}
+    <div class="flex items-center gap-2 mb-3">
+      <span class="text-green-400 text-lg">✓</span>
+      <span class="text-green-400 font-bold text-sm tracking-wider">APPROVED</span>
+    </div>
+    {% else %}
+    <div class="flex items-center gap-2 mb-3">
+      <span class="text-blue-400 text-lg">✓</span>
+      <span class="text-blue-400 font-bold text-sm tracking-wider">HITL APPROVED</span>
+    </div>
+    {% endif %}
+
+    {% if state.work_order_draft %}
+    {% set d = state.work_order_draft %}
+    <div class="space-y-2 mb-4">
+      <div class="flex justify-between text-xs">
+        <span class="text-[#8b949e]">Asset</span>
+        <span class="text-yellow-300 font-bold">{{ d.asset_id }}</span>
+      </div>
+      {% if state.diagnosis %}
+      <div class="flex justify-between text-xs">
+        <span class="text-[#8b949e]">Fault type</span>
+        <span class="text-[#e6edf3]">{{ state.diagnosis.fault_category }}</span>
+      </div>
+      {% endif %}
+      <div class="flex justify-between text-xs">
+        <span class="text-[#8b949e]">Priority</span>
+        <span class="{% if d.priority == 'CRITICAL' %}text-red-400{% elif d.priority == 'HIGH' %}text-orange-400{% elif d.priority == 'MEDIUM' %}text-yellow-400{% else %}text-green-400{% endif %} font-bold">
+          {{ d.priority }}
+        </span>
+      </div>
+      <div class="flex justify-between text-xs">
+        <span class="text-[#8b949e]">ERP Cost</span>
+        <span class="text-[#e6edf3] font-bold">${{ "%.2f"|format(d.estimated_cost_usd) }}</span>
+      </div>
+      <div class="flex justify-between text-xs">
+        <span class="text-[#8b949e]">Confidence</span>
+        <span class="text-[#e6edf3]">{{ "%.0f"|format(d.confidence_score * 100) }}%</span>
+      </div>
+      <div class="flex justify-between text-xs">
+        <span class="text-[#8b949e]">Shutdown req.</span>
+        <span class="{% if d.requires_shutdown %}text-red-400{% else %}text-green-400{% endif %}">
+          {{ "YES" if d.requires_shutdown else "NO" }}
+        </span>
+      </div>
+    </div>
+
+    <div class="mb-3 p-2 bg-[#0d1117] rounded border border-[#21262d]">
+      <p class="text-[10px] text-[#8b949e] mb-1">FAULT</p>
+      <p class="text-xs text-[#e6edf3]">{{ d.fault_description }}</p>
+    </div>
+    <div class="mb-3 p-2 bg-[#0d1117] rounded border border-[#21262d]">
+      <p class="text-[10px] text-[#8b949e] mb-1">ACTION</p>
+      <p class="text-xs text-[#e6edf3]">{{ d.recommended_action }}</p>
+    </div>
+
+    {% if d.required_parts %}
+    <div class="mb-3">
+      <p class="text-[10px] text-[#8b949e] mb-1">PARTS FROM ERP</p>
+      {% for part in d.required_parts %}
+      <div class="text-xs text-[#e6edf3] py-0.5">└ <span class="text-blue-300">{{ part }}</span></div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if state.phase == "HITL_APPROVED" and state.hitl_operator_notes %}
+    <p class="text-[10px] text-[#8b949e] mt-2 break-words">{{ state.hitl_operator_notes }}</p>
+    {% endif %}
+    {% endif %}
+  </div>
+
+  {# ── HITL_REJECTED ────────────────────────────────────────────────────── #}
+  {% elif state.phase == "HITL_REJECTED" %}
+  <div class="wo-card">
+    <div class="flex items-center gap-2 mb-3">
+      <span class="text-red-400 text-lg">✗</span>
+      <span class="text-red-400 font-bold text-sm tracking-wider">REJECTED</span>
+    </div>
+    <p class="text-xs text-[#8b949e]">No ERP action taken. Audit trail preserved.</p>
+    {% if state.hitl_operator_notes %}
+    <p class="text-[10px] text-[#30363d] mt-2 break-words">{{ state.hitl_operator_notes }}</p>
+    {% endif %}
+  </div>
+
+  {# ── BLOCKED — HITL controls ──────────────────────────────────────────── #}
+  {% elif state.phase == "BLOCKED" %}
+  <div class="wo-card">
+    <div class="flex items-center gap-2 mb-3">
+      <span class="text-yellow-400 text-lg">⊘</span>
+      <span class="text-yellow-400 font-bold text-sm tracking-wider">BLOCKED</span>
+    </div>
+
+    {% if state.error_message %}
+    <div class="mb-3 p-2 bg-[#0d1117] rounded border border-yellow-900 text-[10px] text-yellow-300 break-words">
+      {% set parts = state.error_message.split("Last failures:\n", 1) %}
+      {% if parts|length == 2 %}
+        {% for line in parts[1].splitlines() %}
+          {% if line.strip() %}<div>{{ line.strip() }}</div>{% endif %}
+        {% endfor %}
+      {% else %}
+        {{ state.error_message }}
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if state.work_order_draft %}
+    {% set d = state.work_order_draft %}
+    <div class="text-xs space-y-1 mb-4 p-2 bg-[#0d1117] rounded border border-[#21262d]">
+      <p class="text-[10px] text-[#8b949e] mb-1">LAST DRAFT</p>
+      <div class="flex justify-between">
+        <span class="text-[#8b949e]">Fault</span>
+        <span class="text-[#e6edf3] text-right max-w-[150px] truncate" title="{{ d.fault_description }}">{{ d.fault_description[:40] }}…</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-[#8b949e]">Priority</span>
+        <span class="text-red-400 font-bold">{{ d.priority }}</span>
+      </div>
+      <div class="flex justify-between">
+        <span class="text-[#8b949e]">ERP Cost</span>
+        <span class="text-[#e6edf3]">${{ "%.2f"|format(d.estimated_cost_usd) }}</span>
+      </div>
+    </div>
+    {% endif %}
+
+    {# Badge authorisation error #}
+    {% if badge_error is defined and badge_error %}
+    <div class="mb-3 p-2 bg-red-950 border border-red-800 rounded text-[10px] text-red-400 break-words">
+      ⊘ {{ badge_error }}
+    </div>
+    {% endif %}
+
+    {# HITL decision buttons #}
+    {# Badge input has name="operator_id" — hx-include pulls it into each form at request time #}
+    <div class="mb-3">
+      <label class="block text-[10px] text-[#8b949e] mb-1">Operator Badge ID</label>
+      <input id="op-id" name="operator_id" type="text"
+             placeholder="Enter badge number (001 / 002 / 003)"
+             class="w-full mb-3"
+             autocomplete="off">
+    </div>
+
+    <div class="grid grid-cols-2 gap-2 mb-3">
+      <form hx-post="/hitl/{{ state.run_id }}/approve"
+            hx-target="#pipeline-panel"
+            hx-swap="outerHTML"
+            hx-include="#op-id">
+        <button type="submit"
+                class="w-full py-2 text-xs font-bold tracking-widest bg-green-800 hover:bg-green-700 text-green-200 rounded transition-colors">
+          ✓ APPROVE
+        </button>
+      </form>
+      <form hx-post="/hitl/{{ state.run_id }}/reject"
+            hx-target="#pipeline-panel"
+            hx-swap="outerHTML"
+            hx-include="#op-id">
+        <button type="submit"
+                class="w-full py-2 text-xs font-bold tracking-widest bg-red-900 hover:bg-red-800 text-red-200 rounded transition-colors">
+          ✗ REJECT
+        </button>
+      </form>
+    </div>
+
+    {# Edit accordion #}
+    <details class="mt-2">
+      <summary class="text-xs text-[#8b949e] hover:text-[#58a6ff] cursor-pointer select-none">
+        ↳ Edit corrected JSON
+      </summary>
+      <form hx-post="/hitl/{{ state.run_id }}/edit"
+            hx-target="#pipeline-panel"
+            hx-swap="outerHTML"
+            hx-include="#op-id"
+            class="mt-2">
+        <textarea name="corrected_json" rows="10"
+                  class="w-full text-[10px] p-2 resize-none"
+        >{% if state.work_order_draft %}{{ state.work_order_draft.model_dump_json(indent=2) }}{% endif %}</textarea>
+
+        {% if edit_error is defined and edit_error %}
+        <p class="text-red-400 text-[10px] mt-1 break-words">{{ edit_error }}</p>
+        {% endif %}
+
+        <button type="submit"
+                class="mt-2 w-full py-1.5 text-xs bg-blue-900 hover:bg-blue-800 text-blue-200 rounded transition-colors">
+          Submit &amp; re-validate
+        </button>
+      </form>
+    </details>
+  </div>
+
+  {# ── ERROR ────────────────────────────────────────────────────────────── #}
+  {% elif state.phase == "ERROR" %}
+  <div class="wo-card">
+    <div class="flex items-center gap-2 mb-3">
+      <span class="text-red-400 text-lg">✗</span>
+      <span class="text-red-400 font-bold text-sm tracking-wider">ENGINE ERROR</span>
+    </div>
+    <p class="text-xs text-[#8b949e] break-words">{{ state.error_message }}</p>
+  </div>
+
+  {% else %}
+  <p class="text-xs text-[#30363d]">Awaiting pipeline run</p>
+  {% endif %}
+
+</div>
+
+{# ── DECISIONS PANEL (OOB swap into #decisions-panel) ──────────────────── #}
+<div id="decisions-panel" hx-swap-oob="true" class="p-4 overflow-y-auto">
+  <p class="text-[10px] text-[#8b949e] uppercase tracking-widest mb-3">Recent Decisions</p>
+  {% include "_decisions.html" %}
+</div>

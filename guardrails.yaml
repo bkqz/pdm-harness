@@ -1,0 +1,63 @@
+# guardrails.yaml — Operational Boundaries (The Boundaries)
+#
+# Static, declarative limits that the engine enforces on every work order draft.
+# Changing a limit here affects ALL future runs without touching Python code.
+# Values here represent the authorised operational envelope for autonomous action.
+# Any draft that exceeds these thresholds must be escalated to a human approver.
+
+approval:
+  # Maximum cost the engine may auto-approve without human sign-off.
+  # Work orders above this threshold are BLOCKED and flagged for escalation.
+  max_approval_usd: 1000.0
+
+  # Priority levels the engine may auto-approve.
+  # CRITICAL work orders always require human review regardless of cost.
+  auto_approvable_priorities:
+    - LOW
+    - MEDIUM
+    - HIGH
+
+  # If the LLM's self-reported confidence is below this threshold, block approval.
+  # A low-confidence draft indicates the model is uncertain and needs human review.
+  min_confidence_score: 0.75
+
+iteration:
+  # Maximum number of LLM re-prompt attempts per run before the engine aborts.
+  # Prevents infinite self-correction loops on persistently invalid data.
+  max_llm_iterations: 3
+
+shutdown:
+  # Whether the engine is permitted to auto-approve work orders that require
+  # asset shutdown. Any shutdown=true order is escalated regardless of cost.
+  allow_auto_approve_shutdown: false
+
+parts:
+  # Maximum number of distinct parts a single auto-approved work order may specify.
+  # Large part lists indicate complex repairs that warrant human scheduling.
+  max_parts_per_order: 5
+
+assets:
+  # Asset types that are never eligible for autonomous work order approval.
+  # These assets have safety-critical designations requiring manual oversight.
+  safety_critical_prefixes:
+    - SAFETY-
+    - EMERG-
+    - FIRE-
+
+costs:
+  # Base labour charge added to every work order regardless of parts count.
+  # All part prices are pulled from inventory.unit_cost_usd in the ERP —
+  # the agent is never trusted to estimate costs; the harness computes them.
+  labor_usd_per_order: 150.0
+
+hitl:
+  # Badge IDs authorised to approve CRITICAL work orders.
+  # CRITICAL orders carry the highest risk and require senior sign-off.
+  critical_approver_badges:
+    - "001"
+
+  # Badge IDs authorised to approve all other priorities (LOW / MEDIUM / HIGH).
+  standard_approver_badges:
+    - "001"
+    - "002"
+    - "003"

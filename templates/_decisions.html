@@ -1,0 +1,47 @@
+{% if decisions %}
+<div class="space-y-1.5">
+  {% for rec in decisions %}
+    {% set ev = rec.get("event", "") %}
+    {% set ts = rec.get("timestamp", "")[:16] %}
+    {% set asset = rec.get("asset_id", "") %}
+
+    {% if ev == "WORK_ORDER_APPROVED" %}
+    <div class="flex items-center gap-2 py-1 border-b border-[#21262d]">
+      <span class="text-green-400 text-xs shrink-0">✓</span>
+      <span class="text-[10px] text-[#30363d] shrink-0">{{ ts[11:] }}</span>
+      <span class="text-[10px] text-yellow-300 font-bold shrink-0">{{ asset }}</span>
+      <span class="text-[10px] text-green-400 shrink-0">APPROVED</span>
+      <span class="text-[10px] text-[#8b949e] ml-auto">${{ "%.0f"|format(rec.get("estimated_cost_usd", 0)) }}</span>
+    </div>
+
+    {% elif ev == "HITL_DECISION" %}
+    {% set dec = rec.get("decision", "") %}
+    <div class="flex items-center gap-2 py-1 border-b border-[#21262d]">
+      <span class="{% if 'APPROVED' in dec %}text-blue-400{% else %}text-red-400{% endif %} text-xs shrink-0">
+        {% if "APPROVED" in dec %}✓{% else %}✗{% endif %}
+      </span>
+      <span class="text-[10px] text-[#30363d] shrink-0">{{ ts[11:] }}</span>
+      <span class="text-[10px] {% if 'APPROVED' in dec %}text-blue-400{% else %}text-red-400{% endif %}">HITL {{ dec }}</span>
+    </div>
+
+    {% elif ev == "AGENT_DIAGNOSIS" %}
+    <div class="flex items-center gap-2 py-1 border-b border-[#21262d]">
+      <span class="text-blue-400 text-xs shrink-0">→</span>
+      <span class="text-[10px] text-[#30363d] shrink-0">{{ ts[11:] }}</span>
+      <span class="text-[10px] text-yellow-300 shrink-0">{{ asset }}</span>
+      <span class="text-[10px] text-[#8b949e]">{{ rec.get("fault_category", "") }}</span>
+    </div>
+
+    {% elif ev == "ENGINE_ERROR" %}
+    <div class="flex items-center gap-2 py-1 border-b border-[#21262d]">
+      <span class="text-red-400 text-xs shrink-0">✗</span>
+      <span class="text-[10px] text-[#30363d] shrink-0">{{ ts[11:] }}</span>
+      <span class="text-[10px] text-red-400">ERROR</span>
+      <span class="text-[10px] text-[#8b949e] truncate">{{ rec.get("detail","")[:40] }}</span>
+    </div>
+    {% endif %}
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-xs text-[#30363d]">No decisions yet</p>
+{% endif %}

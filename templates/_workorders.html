@@ -1,0 +1,139 @@
+<div class="fixed inset-0 z-50 bg-black/80 p-6 overflow-y-auto"
+     onclick="if(event.target===this)document.getElementById('workorders-panel').classList.add('hidden')">
+  <div class="max-w-5xl mx-auto bg-[#161b22] border border-[#21262d] rounded-lg p-6">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-5">
+      <div>
+        <h2 class="text-sm font-bold text-[#e6edf3] uppercase tracking-widest">Work Order Register</h2>
+        <p class="text-[10px] text-[#30363d] mt-0.5">ERP · CMMS state as of now</p>
+      </div>
+      <button onclick="document.getElementById('workorders-panel').classList.add('hidden')"
+              class="text-xs text-[#8b949e] hover:text-red-400 transition-colors">✕ close</button>
+    </div>
+
+    <!-- Stats row -->
+    {% set open_count = open_orders | length %}
+    {% set closed_count = closed_orders | length %}
+    {% set total_open_cost = open_orders | sum(attribute='estimated_cost_usd') %}
+    <div class="grid grid-cols-4 gap-3 mb-6">
+      <div class="p-3 bg-[#0d1117] rounded border border-yellow-900 text-center">
+        <p class="text-[8px] text-[#8b949e] uppercase tracking-widest mb-1">Open</p>
+        <p class="text-xl font-bold text-yellow-400">{{ open_count }}</p>
+      </div>
+      <div class="p-3 bg-[#0d1117] rounded border border-green-900 text-center">
+        <p class="text-[8px] text-[#8b949e] uppercase tracking-widest mb-1">Closed</p>
+        <p class="text-xl font-bold text-green-400">{{ closed_count }}</p>
+      </div>
+      <div class="p-3 bg-[#0d1117] rounded border border-[#21262d] text-center">
+        <p class="text-[8px] text-[#8b949e] uppercase tracking-widest mb-1">Total WOs</p>
+        <p class="text-xl font-bold text-[#e6edf3]">{{ open_count + closed_count }}</p>
+      </div>
+      <div class="p-3 bg-[#0d1117] rounded border border-[#21262d] text-center">
+        <p class="text-[8px] text-[#8b949e] uppercase tracking-widest mb-1">Open Est. Cost</p>
+        <p class="text-xl font-bold text-[#e6edf3]">${{ "%.0f"|format(total_open_cost) }}</p>
+      </div>
+    </div>
+
+    <!-- Calendar -->
+    <div class="mb-6">
+      <p class="text-[10px] text-[#8b949e] uppercase tracking-widest mb-3">{{ cal.month_name }}</p>
+      <!-- Day headers -->
+      <div class="grid grid-cols-7 gap-px mb-px">
+        {% for d in ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"] %}
+        <div class="text-center text-[9px] text-[#30363d] py-1 uppercase tracking-widest">{{ d }}</div>
+        {% endfor %}
+      </div>
+      <!-- Day cells -->
+      <div class="grid grid-cols-7 gap-px bg-[#21262d]">
+        <!-- Leading blank cells -->
+        {% for _ in range(cal.first_weekday) %}
+        <div class="bg-[#0d1117] h-14"></div>
+        {% endfor %}
+        <!-- Actual days -->
+        {% for day in range(1, cal.days_in_month + 1) %}
+        {% set day_orders = cal.orders_by_day.get(day, []) %}
+        {% set is_today = day == cal.today_day %}
+        <div class="bg-[#0d1117] h-14 p-1 relative
+                    {% if is_today %}ring-1 ring-inset ring-blue-700{% endif %}">
+          <span class="text-[10px] {% if is_today %}text-blue-400 font-bold{% else %}text-[#30363d]{% endif %}">
+            {{ day }}
+          </span>
+          <!-- Dot indicators for work orders on this day -->
+          <div class="flex flex-wrap gap-0.5 mt-0.5">
+            {% for o in day_orders %}
+              {% set p = o.get("priority","LOW") %}
+              {% set col = "bg-red-500" if p in ("CRITICAL","HIGH") else "bg-yellow-400" if p == "MEDIUM" else "bg-green-500" %}
+              <span class="w-1.5 h-1.5 rounded-full {{ col }}"
+                    title="{{ o.ticket_id }} · {{ o.asset_id }} · {{ p }}"></span>
+            {% endfor %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="flex items-center gap-4 mt-2 text-[9px] text-[#30363d]">
+        <span><span class="inline-block w-2 h-2 rounded-full bg-red-500 mr-1"></span>CRITICAL / HIGH</span>
+        <span><span class="inline-block w-2 h-2 rounded-full bg-yellow-400 mr-1"></span>MEDIUM</span>
+        <span><span class="inline-block w-2 h-2 rounded-full bg-green-500 mr-1"></span>LOW</span>
+      </div>
+    </div>
+
+    <!-- Active work orders -->
+    {% if open_orders %}
+    <div class="mb-5">
+      <p class="text-[10px] text-yellow-600 uppercase tracking-widest mb-2">Active · {{ open_count }}</p>
+      <div class="space-y-2">
+        {% for o in open_orders %}
+        {% set p = o.get("priority","LOW") %}
+        {% set p_col = "text-red-400 border-red-900" if p in ("CRITICAL","HIGH") else
+                       "text-yellow-400 border-yellow-900" if p == "MEDIUM" else
+                       "text-green-400 border-green-900" %}
+        <div class="p-3 bg-[#0d1117] rounded border-l-2 {{ p_col.split(' ')[1] }} flex gap-4 items-start">
+          <div class="shrink-0 w-32">
+            <p class="text-[10px] font-bold text-yellow-300">{{ o.ticket_id }}</p>
+            <p class="text-[9px] text-[#8b949e] mt-0.5">{{ o.asset_id }}</p>
+            <span class="text-[9px] font-bold {{ p_col.split(' ')[0] }}">{{ p }}</span>
+            <span class="text-[9px] text-[#30363d] ml-1">{{ o.status }}</span>
+          </div>
+          <div class="flex-1 min-w-0">
+            <p class="text-[11px] text-[#e6edf3] truncate">{{ o.fault_description[:100] }}{% if o.fault_description|length > 100 %}…{% endif %}</p>
+            <p class="text-[10px] text-[#8b949e] mt-0.5 truncate">→ {{ o.action_taken or o.recommended_action or "" | truncate(80) }}</p>
+          </div>
+          <div class="shrink-0 text-right">
+            <p class="text-[11px] font-bold text-[#e6edf3]">${{ "%.0f"|format(o.estimated_cost_usd or 0) }}</p>
+            <p class="text-[9px] text-[#30363d]">{{ (o.created_utc or "")[:10] }}</p>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% else %}
+    <p class="text-xs text-[#30363d] mb-5">No active work orders.</p>
+    {% endif %}
+
+    <!-- Closed history -->
+    {% if closed_orders %}
+    <div>
+      <p class="text-[10px] text-[#30363d] uppercase tracking-widest mb-2">Closed history · {{ closed_count }}</p>
+      <div class="space-y-px">
+        {% for o in closed_orders %}
+        {% set p = o.get("priority","LOW") %}
+        <div class="flex items-center gap-3 py-1.5 border-b border-[#0d1117] text-[10px]">
+          <span class="text-green-600 shrink-0">✓</span>
+          <span class="text-[#30363d] shrink-0 w-28">{{ (o.created_utc or "")[:10] }}</span>
+          <span class="text-yellow-300 shrink-0 w-32 font-mono">{{ o.ticket_id }}</span>
+          <span class="text-[#8b949e] shrink-0 w-24">{{ o.asset_id }}</span>
+          <span class="shrink-0 w-16
+            {% if p in ('CRITICAL','HIGH') %}text-red-500
+            {% elif p == 'MEDIUM' %}text-yellow-500
+            {% else %}text-green-500{% endif %}">{{ p }}</span>
+          <span class="text-[#8b949e] truncate">{{ o.fault_description[:70] }}{% if o.fault_description and o.fault_description|length > 70 %}…{% endif %}</span>
+          <span class="shrink-0 text-[#30363d] ml-auto">${{ "%.0f"|format(o.estimated_cost_usd or 0) }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+</div>

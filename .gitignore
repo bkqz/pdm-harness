@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# PDM Harness — project-specific
+# SQLite ERP state databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Append-only audit logs (contain sensitive telemetry)
+*.jsonl

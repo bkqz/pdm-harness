@@ -1,87 +1,84 @@
-# Semantic Air-Gap Harness
+# Semantic Air-Gap Harness — Developer Reference
 
 ## What This Is
 
-A deterministic Python harness that encapsulates a non-deterministic agent (LLM or rule-based) for industrial predictive maintenance. The harness physically prevents the agent from writing to any ERP/CMMS system until its output passes every checkpoint, guardrail, and schema contract defined in the system.
+A deterministic Python harness that encapsulates a non-deterministic AI agent for industrial predictive maintenance. The harness physically prevents the agent from writing to any ERP/CMMS system until its output passes every schema contract, SQL checkpoint, and YAML guardrail.
 
-The agent proposes. The harness decides.
+**The agent proposes. The harness decides.**
 
 ---
 
-## The Four Pillars
+## The Five Pillars
 
-| Pillar | File | What It Does |
+| Pillar | File | Role |
 |---|---|---|
-| **Schema** | [material.py](material.py) | Pydantic v2 contracts for all inputs and outputs. Garbage-in is rejected here before any agent sees it. |
-| **Checkpoints** | [tools.py](tools.py) | SQL queries against the live ERP/CMMS database. Binary PASS/FAIL per constraint. |
-| **Guardrails** | [guardrails.yaml](guardrails.yaml) | Declarative config-driven hard limits (cost ceiling, part count, shutdown restriction). No code change needed to tighten a limit. |
-| **Alarms** | [alarms.py](alarms.py) | Named structured events emitted whenever the harness blocks, escalates, or detects a failure. Written to `audit.jsonl` and printed to the operator terminal. |
+| **Schema** | [harness/material.py](harness/material.py) | Pydantic v2 contracts for all I/O. Garbage-in is rejected before any agent sees it. |
+| **Engine** | [harness/engine.py](harness/engine.py) | Synchronous state machine — the orchestration loop. |
+| **Checkpoints** | [harness/tools.py](harness/tools.py) | SQL queries returning binary PASS/FAIL. No semantic search. |
+| **Guardrails** | [guardrails.yaml](guardrails.yaml) | Declarative hard limits. Tighten any limit without touching Python. |
+| **Observability** | [harness/observability.py](harness/observability.py) | Append-only `audit.jsonl` forensic trail. |
 
-Supporting infrastructure:
+Supporting files:
 
 | File | Role |
 |---|---|
-| [engine.py](engine.py) | Synchronous state machine — the orchestration loop |
-| [observability.py](observability.py) | Append-only `audit.jsonl` forensic trail |
-| [hitl.py](hitl.py) | Human-In-The-Loop review layer for blocked work orders |
-| [agent_interface.py](agent_interface.py) | `AgentProtocol` + two swappable implementations |
+| [harness/agent_interface.py](harness/agent_interface.py) | `AgentProtocol` + two swappable implementations |
+| [harness/alarms.py](harness/alarms.py) | Named structured alarm events |
+| [harness/hitl.py](harness/hitl.py) | CLI HITL review flow (used by `run.py`) |
+| [api.py](api.py) | FastAPI web console — routes, HTMX handlers, badge HITL enforcement |
 
 ---
 
 ## State Machine
 
-Every run transitions through these phases:
+Every run transitions through these phases in `EngineState.phase`:
 
 ```
-INTAKE ──► INFERENCE ──► VALIDATION ──► APPROVED
-                │               │
-                │          (failure)
-                │               │
-                └─ (retry, up to max_llm_iterations)
-                                │
-                           BLOCKED ──► HITL_REVIEW ──► HITL_APPROVED
-                                                   └──► HITL_REJECTED
-ERROR (abort on unrecoverable fault)
+INTAKE ──► INFERENCE ──► (ERP LOOKUP) ──► VALIDATION ──► APPROVED
+               │                               │
+           (parse error,                  (tool or guardrail failure)
+            retry up to                        │
+            max_iterations)               BLOCKED ──► HITL_APPROVED
+                                                  └──► HITL_REJECTED
+
+ERROR  (unrecoverable — SCADA validation failure, API error, asset not found)
 ```
 
-**INTAKE** — Raw SCADA telemetry is validated by `SCADAReading` (Pydantic). Physical bounds are enforced (e.g. temperature ge −40°C le 300°C). Any invalid reading raises `ERROR` immediately.
+**INTAKE** — `SCADAReading(**raw)` enforces physical bounds (e.g. temperature ≥ −40°C). `check_asset_exists` runs as a fail-fast before any LLM call.
 
-**INFERENCE** — The agent receives a structured prompt containing the SCADA values and the approved parts catalogue for this specific asset. It returns a work order JSON.
+**INFERENCE** — Agent receives SCADA telemetry only (no part numbers, no prices). Returns `AgentDiagnosis` (7-value `fault_category` Literal, priority, shutdown flag, confidence). Self-correction loop retries only on JSON parse or schema errors, up to `max_llm_iterations`.
 
-**VALIDATION** — Three SQL checkpoints run in sequence, then all guardrail rules:
-1. `check_asset_exists` — is this asset in the ERP register?
-2. `check_active_tickets` — is there already an open work order on this asset?
-3. `check_inventory` — are all required parts in the approved catalogue and in stock?
+**ERP LOOKUP** — Harness queries `maintenance_bom` using `fault_category` as the key. `select_parts_for_fault()` returns `{part_number: qty}`. `compute_order_cost()` multiplies by `inventory.unit_cost_usd` and adds the configured labour charge. The agent never sees or influences this step.
 
-If all pass → `APPROVED`. If any fail → correction context is injected back and the loop repeats.
+**VALIDATION** — `check_active_tickets` blocks if an OPEN/IN_PROGRESS ticket already exists for the asset (duplicate prevention). `check_inventory` verifies parts are in the approved catalogue and in stock; auto-raises a purchase order for approved-but-out-of-stock parts.
 
-**BLOCKED** — All `max_llm_iterations` consumed without a passing draft. The run is frozen and routed to HITL.
+**GUARDRAILS** — `enforce_guardrails()` applies all rules from `guardrails.yaml`. Any failure adds a human-readable reason to `all_failures`. ERP and guardrail failures both lead to BLOCKED — neither retries the agent (they require operator action, not model correction).
 
-**HITL_REVIEW** — Human operator is presented with the last draft and all failure reasons. They choose APPROVE / REJECT / EDIT. The EDIT path re-runs all checkpoints on the corrected draft before approving.
+**APPROVED** — `create_work_order(draft, run_id)` persists an OPEN ticket to the `work_orders` table. This is what causes subsequent dispatches on the same asset to be blocked by `check_active_tickets`.
+
+**BLOCKED** — The web UI presents the last draft and all failure reasons to a human operator. HITL controls require a valid badge ID.
 
 ---
 
 ## Alarm Types
 
-All alarms are written to `audit.jsonl` with `"event": "ALARM"` and printed to the terminal in a visually distinct block.
+All alarms are appended to `audit.jsonl` with `"event": "ALARM"`.
 
-| Alarm Type | Severity | Trigger |
+| Alarm | Severity | Trigger |
 |---|---|---|
-| `GUARDRAIL_BREACH` | WARNING | A `guardrails.yaml` rule fired (cost, priority, shutdown, parts count, safety prefix) |
-| `DUPLICATE_TICKET` | WARNING | Active `OPEN` or `IN_PROGRESS` work order already exists for this asset |
-| `UNKNOWN_ASSET` | CRITICAL | Asset ID not found in the ERP/CMMS register |
-| `INVENTORY_SHORTAGE` | WARNING | Part is approved for this asset but quantity is zero — PO auto-raised |
-| `PART_NOT_APPROVED` | CRITICAL | Agent used a part number not in the approved catalogue for this asset |
-| `LLM_PARSE_FAILURE` | WARNING | Agent returned non-JSON or schema-invalid output (self-correction will retry) |
-| `LLM_API_ERROR` | CRITICAL | HTTP error from the OpenRouter API |
-| `VALIDATION_EXHAUSTED` | CRITICAL | All `max_llm_iterations` used without a passing draft |
+| `GUARDRAIL_BREACH` | WARNING | Any `guardrails.yaml` rule fired |
+| `DUPLICATE_TICKET` | WARNING | Active OPEN/IN_PROGRESS WO on this asset |
+| `UNKNOWN_ASSET` | CRITICAL | Asset ID not in ERP register |
+| `INVENTORY_SHORTAGE` | WARNING | Approved part is out of stock — PO auto-raised |
+| `PART_NOT_APPROVED` | CRITICAL | Part not in approved catalogue for this asset |
+| `LLM_PARSE_FAILURE` | WARNING | Agent returned non-JSON or schema-invalid output |
+| `LLM_API_ERROR` | CRITICAL | HTTP error from OpenRouter API |
+| `VALIDATION_EXHAUSTED` | CRITICAL | All `max_llm_iterations` used with no passing draft |
 | `HITL_ESCALATION` | CRITICAL | Run routed to human operator for binding decision |
 
 ---
 
 ## Swappable Agent Interface
-
-The harness decouples the agent from the validation pipeline via `AgentProtocol`:
 
 ```python
 class AgentProtocol(Protocol):
@@ -93,88 +90,133 @@ class AgentProtocol(Protocol):
         """Returns (content, prompt_tokens, completion_tokens)."""
 ```
 
-**Provided implementations:**
+| Class | Description |
+|---|---|
+| `OpenRouterAgent` | Production. Calls OpenRouter via httpx. Requires `OPENROUTER_API_KEY`. |
+| `RuleBasedAgent` | Deterministic. ISO 10816-3 vibration zones + API 670 temperature limits. No API key. Structured JSON input only — cannot extract from prose. |
 
-| Class | File | Description |
+The UI header selects between three modes:
+
+| Button | Agent | Model |
 |---|---|---|
-| `OpenRouterAgent` | [agent_interface.py](agent_interface.py) | Production. Calls OpenRouter API via httpx. Requires `OPENROUTER_API_KEY`. |
-| `RuleBasedAgent` | [agent_interface.py](agent_interface.py) | Deterministic. Applies ISO 10816-3 vibration zones and API 670 temperature limits directly. No API key, no network call. Requires structured JSON input. |
+| GPT-OSS-20B | OpenRouterAgent | `openai/gpt-oss-20b:free` |
+| Qwen3-Coder | OpenRouterAgent | `qwen/qwen3-coder:free` |
+| Offline | RuleBasedAgent | N/A |
 
-**Swap at runtime via environment variable:**
-
-```bash
-# Default — LLM via OpenRouter
-python engine.py
-
-# Deterministic rule engine (no API call, no cost)
-AGENT_TYPE=rule-based python engine.py
-```
-
-**Add your own agent** by implementing `AgentProtocol` and passing an instance:
+Add your own agent by implementing `AgentProtocol`:
 
 ```python
-from engine import run_harness_loop
-from agent_interface import AgentProtocol
-
-class MyCustomAgent:
+class MyAgent:
     def generate(self, messages, model):
-        # your logic here
-        return json.dumps(my_work_order), 0, 0
+        return json.dumps({"fault_category": "LUBRICATION", ...}), 0, 0
 
-state = run_harness_loop(raw_input, agent=MyCustomAgent())
+state = run(raw_scada, agent=MyAgent(), model="")
 ```
+
+---
+
+## NLP Operator Report Path
+
+The `POST /dispatch/nlp` route accepts unstructured operator prose. The harness uses the agent as a semantic bridge to extract structured SCADA fields before entering the main validation loop:
+
+```python
+def _parse_unstructured_to_scada(
+    raw_text: str, agent: AgentProtocol, model: str
+) -> Dict[str, Any]:
+```
+
+The system prompt instructs the LLM to extract `asset_id`, `vibration_mm_s`, `temperature_c`, `pressure_bar`, `flow_rate_l_min`, and `fault_codes` from the prose. Missing values are filled with physically plausible defaults. The original prose is then passed as `operator_notes` to `engine.run()` and appended to the diagnosis prompt — the agent can factor in field context that sensor readings alone don't capture.
+
+The UI response includes a purple "NLP → SCADA Extraction" box showing exactly what was inferred, so the operator can catch hallucinated values before approving.
+
+**Note:** `RuleBasedAgent` does not support prose extraction. Use structured JSON or switch to an LLM model when using the Operator Report tab.
+
+---
+
+## HITL Badge Guardrail
+
+Configured in `guardrails.yaml` under `hitl`:
+
+```yaml
+hitl:
+  critical_approver_badges:
+    - "001"
+  standard_approver_badges:
+    - "001"
+    - "002"
+    - "003"
+```
+
+Enforced by `_check_badge()` in `api.py` at the top of all three HITL handlers (`/approve`, `/reject`, `/edit`):
+
+- Empty badge → always blocked (no anonymous decisions)
+- CRITICAL priority → badge must be in `critical_approver_badges`
+- All other priorities → badge must be in `standard_approver_badges`
+- Badge `001` is a superuser — authorised for all decisions
+
+To add a new badge: edit `guardrails.yaml` only. No Python change needed.
 
 ---
 
 ## How to Add a Guardrail
 
-Guardrails are declared in [guardrails.yaml](guardrails.yaml) and enforced in `engine.enforce_guardrails()`.
-
-**Step 1 — Add to `guardrails.yaml`:**
+**Step 1 — Add the limit to `guardrails.yaml`:**
 
 ```yaml
 approval:
   max_approval_usd: 1000.0
-  # add your new limit here, e.g.:
-  max_estimated_days: 14
+  max_estimated_days: 14   # <-- new
 ```
 
-**Step 2 — Add a check block to `enforce_guardrails()` in [engine.py](engine.py):**
+**Step 2 — Add a check block to `enforce_guardrails()` in `engine.py`:**
 
 ```python
 max_days = approval.get("max_estimated_days", 14)
 if draft.estimated_days > max_days:
     detail = f"estimated_days {draft.estimated_days} exceeds max {max_days}"
     obs.log_guardrail_block(run_id, "max_estimated_days", detail, draft.estimated_days)
-    alarms.fire_alarm(alarms.guardrail_breach(run_id, draft.asset_id, "max_estimated_days", detail, draft.estimated_days))
+    alarms.fire_alarm(alarms.guardrail_breach(
+        run_id, draft.asset_id, "max_estimated_days", detail, draft.estimated_days
+    ))
     failures.append(f"Duration guardrail: {detail}.")
 ```
 
-**Step 3 — Add the field to `WorkOrderRequest` in [material.py](material.py) if needed.**
+**Step 3 — Add the field to `WorkOrderRequest` in `material.py` if it's a new work order field.**
 
-That's it. The self-correction loop will automatically inject the new failure reason back to the agent on the next iteration.
+The self-correction loop will automatically inject the new failure reason into the agent's next prompt on retry.
 
 ---
 
 ## How to Add a Checkpoint
 
-Checkpoints are SQL queries in [tools.py](tools.py) that return a `ValidationResult`.
+Checkpoints are SQL queries in `tools.py` that return a `ValidationResult`.
 
 **Step 1 — Write the function:**
 
 ```python
 def check_my_constraint(asset_id: str, run_id: str) -> ValidationResult:
+    """Prevents <describe what this blocks>."""
     conn = _get_connection()
     row = conn.execute("SELECT ... FROM ... WHERE asset_id = ?", (asset_id,)).fetchone()
     conn.close()
 
     if row is None or <failure_condition>:
-        alarms.fire_alarm(alarms.guardrail_breach(run_id, asset_id, "my_constraint", "detail", value))
-        return ValidationResult(passed=False, check_name="check_my_constraint",
-                                detail="Human-readable failure reason.", blocking=True)
+        alarms.fire_alarm(alarms.guardrail_breach(
+            run_id, asset_id, "my_constraint", "detail", value
+        ))
+        return ValidationResult(
+            passed=False,
+            check_name="check_my_constraint",
+            detail="Human-readable failure reason.",
+            blocking=True,
+        )
 
-    return ValidationResult(passed=True, check_name="check_my_constraint",
-                            detail="Constraint satisfied.", blocking=True)
+    return ValidationResult(
+        passed=True,
+        check_name="check_my_constraint",
+        detail="Constraint satisfied.",
+        blocking=True,
+    )
 ```
 
 **Step 2 — Register it in `run_all_checkpoints()`:**
@@ -189,58 +231,66 @@ def run_all_checkpoints(asset_id, part_numbers, run_id):
     ]
 ```
 
-No changes needed in engine.py — the engine iterates `tool_results` generically.
+No changes needed in `engine.py` — the engine iterates `tool_results` generically.
 
 ---
 
 ## Quick Start
 
-```bash
-# 1. Copy environment template
-cp .env.example .env
-# Edit .env: set OPENROUTER_API_KEY
+### Web console (recommended)
 
-# 2. Create virtualenv and install dependencies
+```bash
+cp .env.example .env          # set OPENROUTER_API_KEY
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+uvicorn api:app --reload
+# Open http://localhost:8000
+```
 
-# 3. Run the harness (seeds the database on first run)
-python engine.py
+### CLI
 
-# 4. Paste a JSON SCADA reading at the prompt:
-# {"asset_id": "MOL-PUMP-001", "timestamp": "2026-06-13T06:00:00Z",
-#  "vibration_mm_s": 8.4, "temperature_c": 82.1, "pressure_bar": 19.2,
-#  "flow_rate_l_min": 476.0, "fault_codes": ["VIB-HIGH", "BRG-TEMP-WARN"]}
-
-# 5. Run with the deterministic rule-based agent (no API key needed)
-AGENT_TYPE=rule-based python engine.py
+```bash
+python run.py                        # OpenRouter LLM (requires API key)
+AGENT_TYPE=rule-based python run.py  # Deterministic, no API call
 ```
 
 ---
 
 ## Audit Log
 
-Every state transition, tool result, guardrail block, alarm, purchase order, and human decision is appended to `audit.jsonl`. The log is never truncated or modified — only appended.
+Every state transition, tool result, guardrail block, alarm, PO, and human decision is appended to `audit.jsonl`. Never truncated; only appended.
 
 ```bash
 # Pretty-print last 10 events
 tail -10 audit.jsonl | jq .
 
-# Show all alarms from the last run
+# Show all alarms
 grep '"event": "ALARM"' audit.jsonl | jq .
 
 # Show all approved work orders
 grep '"event": "WORK_ORDER_APPROVED"' audit.jsonl | jq .
+
+# Show all guardrail blocks
+grep '"event": "GUARDRAIL_BLOCK"' audit.jsonl | jq .
 ```
 
 ---
 
 ## Asset Model
 
-The bundled database models a **Main Oil Line (MOL) Centrifugal Pump** — a Flowserve PVXM 12×10-17 API 610 OH2 process pump (200 kW / 6 kV) at Well Pad 3, Oil Gathering Station. The database includes:
+The bundled database models an oil gathering station pump train and supporting equipment:
 
-- Full asset register with specs (rated flow 650 m³/h, head 120 m, power 200 kW)
-- 20 inventory items across 6 categories (bearings, seals, couplings, sensors, filters, gaskets)
-- 10 part compatibility records linking parts to the MOL-PUMP-001 asset
-- 7 historical work orders (1 open — triggers duplicate-ticket guardrail)
-- 4 purchase order records (pre-seeded for demo)
+| Asset | Type | Key Specs |
+|---|---|---|
+| `MOL-PUMP-001` | Centrifugal pump (Flowserve PVXM 12×10-17) | 320 m³/h · 185 m · 200 kW · API 610 OH2 |
+| `MOL-MOTOR-001` | Drive motor (WEG W22) | 200 kW · 6 kV · IE3 |
+| `MOL-COUP-001` | Disc coupling (Rexnord Thomas 710) | Flexible disc pack |
+| `PUMP-042` | Feed pump (Sulzer CPT-40-200) | 95 m³/h · 62 m · 18.5 kW |
+| `COMP-017` | Air compressor (Atlas Copco GA55+ VSD) | 55 kW |
+| `FAN-008` | Cooling fan (Howden VAH-1400-6P) | 7.5 kW |
+
+**Inventory:** 30 spare parts across 8 categories (bearings, seals, wear parts, gaskets, coupling, instruments, lubrication, hardware). All SKF, John Crane, Flowserve, Rexnord, Bently Nevada, and other OEM part numbers are realistic and cross-referenced against the asset compatibility table.
+
+**Maintenance BOM:** Covers 7 fault categories × 6 assets. `ROUTINE_INSPECTION` carries no BOM entries — cost is labour only.
+
+**Pre-seeded work order:** `WO-MOL-2026-003` (OPEN, HIGH priority) on `MOL-PUMP-001` — demonstrates the duplicate-ticket guardrail on any new dispatch to that asset.
